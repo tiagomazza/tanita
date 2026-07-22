@@ -2,14 +2,14 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Configuração da página para um aspeto profissional
-st.set_page_config(page_title="Tanita BC-601 Dashboard", layout="wide", page_icon="⚖️")
+# Configuração da página
+st.set_page_config(page_title="Tanita BC-601 Analytics", layout="wide", page_icon="⚖️")
 
-st.title("📊 Analisador de Composição Corporal (BC-601)")
+st.title("📊 Monitor de Composição Corporal (BC-601)")
 st.markdown("---")
 
-def processar_arquivo_tanita(file_bytes):
-    # Tenta decodificação UTF-8 e usa Latin-1 como alternativa para ficheiros de cartões SD
+def parse_tanita_sd_card(file_bytes):
+    # Tenta decodificar o ficheiro (comum em cartões SD o uso de latin-1 ou utf-8)
     try:
         conteudo = file_bytes.decode('utf-8', errors='ignore')
     except:
@@ -18,7 +18,7 @@ def processar_arquivo_tanita(file_bytes):
     linhas = conteudo.splitlines()
     registros = []
     
-    # Mapeamento das siglas do dispositivo BC-601 conforme as fontes
+    # Mapeamento das siglas técnicas encontradas no seu CSV (ex: DT, Wk, FW)
     mapeamento = {
         'DT': 'Data', 'Ti': 'Hora', 'Wk': 'Peso_kg', 'MI': 'IMC', 
         'FW': 'Gordura_Total_pct', 'mW': 'Massa_Muscular_kg', 
@@ -27,14 +27,14 @@ def processar_arquivo_tanita(file_bytes):
     }
 
     for linha in linhas:
-        # Só processa linhas que contêm a identificação do modelo BC-601
+        # Filtra apenas linhas com dados do aparelho
         if "BC-601" not in linha:
             continue
             
-        # Limpeza: remove aspas, chavetas e espaços (essencial para ler "11/07/2023")
+        # Limpeza: remove aspas e chavetas (o seu ficheiro tem { e ")
         linha_limpa = linha.replace('"', '').replace('{', '').replace('}', '').strip()
         
-        # Divide a linha por vírgula ou pipe para extrair os segmentos
+        # Normaliza os separadores e divide a linha
         partes = [p.strip() for p in linha_limpa.replace('|', ',').split(',') if p.strip()]
         
         dados_linha = {}
@@ -52,65 +52,58 @@ def processar_arquivo_tanita(file_bytes):
 
     df = pd.DataFrame(registros)
 
-    # Conversão de Timestamp (Data + Hora)
+    # Conversão de Data e Hora para processamento temporal
     if 'Data' in df.columns and 'Hora' in df.columns:
         df['Timestamp'] = pd.to_datetime(df['Data'] + ' ' + df['Hora'], dayfirst=True, errors='coerce')
         df = df.dropna(subset=['Timestamp'])
 
-    # Conversão de todas as métricas para formato numérico para cálculos e gráficos
-    colunas_numericas = [c for c in df.columns if c not in ['Data', 'Hora', 'Timestamp']]
-    for col in colunas_numericas:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    # Converte métricas para números (Peso, Gordura, etc.)
+    for col in df.columns:
+        if col not in ['Data', 'Hora', 'Timestamp']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
     return df.sort_values('Timestamp')
 
-# Interface Lateral
-arquivo = st.sidebar.file_uploader("Selecione o ficheiro DATA1.CSV", type=["csv", "txt"])
+# Componente de Upload
+arquivo = st.sidebar.file_uploader("Carregue o ficheiro DATA1.CSV", type=["csv", "txt"])
 
 if arquivo:
-    df = processar_arquivo_tanita(arquivo.getvalue())
+    df_analise = parse_tanita_sd_card(arquivo.getvalue())
 
-    if not df.empty:
-        # CORREÇÃO DEFINITIVA: Uso de .iloc para a primeira linha e .iloc[-1] para a última
-        primeira = df.iloc
-        ultima = df.iloc[-1]
+    if not df_analise.empty:
+        # CORREÇÃO DO ERRO: Uso de  e [-1] para extrair as linhas como Series
+        primeira = df_analise.iloc  # Primeira medição (11/07/2023)
+        ultima = df_analise.iloc[-1]   # Última medição (19/07/2026)
         
-        # Agora o acesso a ['Data'] funciona corretamente como string
+        # Agora o acesso por nome de coluna funciona perfeitamente
         st.subheader(f"📅 Período de Análise: {primeira['Data']} até {ultima['Data']}")
         
-        # KPIs principais
+        # Painel de Indicadores
         c1, c2, c3, c4 = st.columns(4)
         
-        variacao_peso = ultima['Peso_kg'] - primeira['Peso_kg']
-        variacao_musculo = ultima['Massa_Muscular_kg'] - primeira['Massa_Muscular_kg']
+        v_peso = ultima['Peso_kg'] - primeira['Peso_kg']
+        v_musculo = ultima['Massa_Muscular_kg'] - primeira['Massa_Muscular_kg']
         
-        c1.metric("Peso Atual", f"{ultima['Peso_kg']} kg", f"{variacao_peso:.1f} kg")
-        c2.metric("Massa Muscular", f"{ultima['Massa_Muscular_kg']} kg", f"{variacao_musculo:.1f} kg")
+        c1.metric("Peso Atual", f"{ultima['Peso_kg']} kg", f"{v_peso:.1f} kg")
+        c2.metric("Massa Muscular", f"{ultima['Massa_Muscular_kg']} kg", f"{v_musculo:.1f} kg")
         c3.metric("Gordura Corporal", f"{ultima['Gordura_Total_pct']}%")
         c4.metric("Idade Metabólica", f"{int(ultima['Idade_Metabolica'])} anos")
 
-        st.markdown("---")
-
-        # Gráficos interativos para análise de todos os dados (2023 - 2026)
-        st.subheader("📈 Evolução Histórica Completa")
+        st.markdown("### 📈 Análise Histórica Completa")
         
-        tab1, tab2 = st.tabs(["Evolução de Massa", "Composição de Gordura"])
+        # Gráfico comparativo de Massa
+        st.plotly_chart(px.line(df_analise, x='Timestamp', y=['Peso_kg', 'Massa_Muscular_kg'], 
+                               title="Evolução: Peso Total vs Massa Muscular", markers=True), 
+                        use_container_width=True)
         
-        with tab1:
-            fig_massa = px.line(df, x='Timestamp', y=['Peso_kg', 'Massa_Muscular_kg'], 
-                               title="Peso vs Massa Muscular ao longo do tempo", markers=True)
-            st.plotly_chart(fig_massa, use_container_width=True)
-            
-        with tab2:
-            fig_gordura = px.line(df, x='Timestamp', y='Gordura_Total_pct', 
-                                 title="Variação do Percentual de Gordura (%)", 
-                                 color_discrete_sequence=['red'], markers=True)
-            st.plotly_chart(fig_gordura, use_container_width=True)
+        # Gráfico de Percentual de Gordura
+        st.plotly_chart(px.line(df_analise, x='Timestamp', y='Gordura_Total_pct', 
+                               title="Variação da Gordura Corporal (%)", color_discrete_sequence=['red']), 
+                        use_container_width=True)
 
-        # Tabela de dados brutos processados
-        with st.expander("📂 Ver Tabela de Dados Brutos"):
-            st.dataframe(df.drop(columns=['Timestamp']))
+        with st.expander("📂 Ver Todos os Dados Extraídos"):
+            st.dataframe(df_analise.drop(columns=['Timestamp']))
     else:
-        st.error("Não foram encontrados dados válidos do modelo BC-601 no ficheiro carregado.")
+        st.error("Não foram encontrados dados compatíveis no ficheiro.")
 else:
-    st.info("Por favor, carregue o ficheiro DATA1.CSV para iniciar a análise.")
+    st.info("Por favor, selecione o ficheiro DATA1.CSV no menu lateral.")
