@@ -2,131 +2,106 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Configuração da página
-st.set_page_config(page_title="Análise BC-601", layout="wide")
+# Configuração visual da página
+st.set_page_config(page_title="Análise Tanita BC-601", layout="wide", page_icon="⚖️")
 
-st.title("📊 Painel de Composição Corporal (BC-601)")
+st.title("📊 Monitor de Composição Corporal (BC-601)")
+st.markdown("---")
 
-def parse_bc601_data(file_content):
-    records = []
-    for line in file_content:
-        # Tenta identificar o separador (pode ser | ou ,)
-        sep = '|' if '|' in line else ','
-        parts = [p.strip() for p in line.split(sep) if p.strip()]
-        
-        # Ignora linhas que não parecem conter dados (ex: separadores de tabela)
-        if len(parts) < 10 or '---' in parts:
-            continue
-            
-        data_dict = {}
-        # O formato BC-601 é sequencial: Chave, Valor, Chave, Valor...
-        # Procuramos as chaves conhecidas para extrair seus valores seguintes
-        keys_to_find = ['DT', 'Ti', 'AG', 'Wk', 'MI', 'FW', 'mW', 'bW', 'IF', 'rD', 'rA', 'ww']
-        
-        for k in keys_to_find:
-            if k in parts:
-                idx = parts.index(k)
-                if idx + 1 < len(parts):
-                    data_dict[k] = parts[idx + 1]
-        
-        if data_dict:
-            records.append(data_dict)
+def processar_dados_tanita(conteudo_arquivo):
+    registros = []
     
-    if not records:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(records)
-    
-    # Mapeamento para nomes amigáveis
-    column_mapping = {
+    # Mapeamento das siglas do dispositivo para nomes amigáveis
+    mapeamento = {
         'DT': 'Data', 'Ti': 'Hora', 'AG': 'Idade', 'Wk': 'Peso_kg',
         'MI': 'IMC', 'FW': 'Gordura_Total_pct', 'mW': 'Massa_Muscular_kg',
         'bW': 'Massa_Ossea_kg', 'IF': 'Gordura_Visceral', 'rD': 'TMB_kcal',
         'rA': 'Idade_Metabolica', 'ww': 'Agua_Corporal_pct'
     }
-    
-    # Verifica se as colunas mínimas existem antes de renomear
-    existing_cols = [c for c in column_mapping.keys() if c in df.columns]
-    df = df[existing_cols].rename(columns=column_mapping)
-    
-    # Conversões de tipos
+
+    for linha in conteudo_arquivo:
+        # Ignora linhas vazias ou de formatação (ex: | ------ |)
+        if not linha.strip() or '---' in linha:
+            continue
+            
+        # Divide a linha por '|' e limpa os espaços
+        partes = [p.strip() for p in linha.split('|') if p.strip()]
+        
+        # Cria um dicionário para a linha atual buscando as chaves do mapeamento
+        dados_linha = {}
+        for sigla in mapeamento.keys():
+            if sigla in partes:
+                indice = partes.index(sigla)
+                if indice + 1 < len(partes):
+                    dados_linha[mapeamento[sigla]] = partes[indice + 1]
+        
+        if dados_linha:
+            registros.append(dados_linha)
+
+    if not registros:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(registros)
+
+    # Conversão de Data e Hora com tratamento de erro (coerce transforma erro em NaT)
     if 'Data' in df.columns and 'Hora' in df.columns:
-        df['Data_Completa'] = pd.to_datetime(df['Data'] + ' ' + df['Hora'], dayfirst=True)
-    
-    numeric_cols = ['Peso_kg', 'IMC', 'Gordura_Total_pct', 'Massa_Muscular_kg', 
-                    'Massa_Ossea_kg', 'Gordura_Visceral', 'TMB_kcal', 
-                    'Idade_Metabolica', 'Agua_Corporal_pct']
-    
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-    return df.sort_values('Data_Completa') if 'Data_Completa' in df.columns else df
+        df['Timestamp'] = pd.to_datetime(
+            df['Data'] + ' ' + df['Hora'], 
+            dayfirst=True, 
+            errors='coerce'
+        )
+        # Remove registros onde a data/hora resultou em erro
+        df = df.dropna(subset=['Timestamp'])
 
-uploaded_file = st.sidebar.file_uploader("Carregue o arquivo DATA1.CSV", type=["csv", "txt"])
+    # Conversão de colunas numéricas
+    colunas_num = [c for c in df.columns if c not in ['Data', 'Hora', 'Timestamp']]
+    for col in colunas_num:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-if uploaded_file:
-    content = uploaded_file.getvalue().decode("utf-8").splitlines()
-    def parse_bc601_data(file_content):
-        records = []
-        for line in file_content:
-            # 1. Ignora linhas de separação (ex: | ------ |) e linhas vazias
-            if '---' in line or not line.strip():
-                continue
-                
-            sep = '|' if '|' in line else ','
-            parts = [p.strip() for p in line.split(sep) if p.strip()]
-            
-            # Filtro de segurança: registros válidos do BC-601 são longos
-            if len(parts) < 15:
-                continue
-                
-            data_dict = {}
-            keys_to_find = ['DT', 'Ti', 'AG', 'Wk', 'MI', 'FW', 'mW', 'bW', 'IF', 'rD', 'rA', 'ww']
-            
-            for k in keys_to_find:
-                if k in parts:
-                    idx = parts.index(k)
-                    if idx + 1 < len(parts):
-                        data_dict[k] = parts[idx + 1]
-            
-            if data_dict:
-                records.append(data_dict)
-        
-        if not records:
-            return pd.DataFrame()
+    return df.sort_values('Timestamp')
 
-        df = pd.DataFrame(records)
+# Interface Lateral para Upload
+with st.sidebar:
+    st.header("Configurações")
+    arquivo = st.file_uploader("Selecione o arquivo DATA1.CSV", type=["csv", "txt"])
+
+if arquivo:
+    # Lê o arquivo e processa
+    linhas = arquivo.getvalue().decode("utf-8").splitlines()
+    df_processado = processar_dados_tanita(linhas)
+
+    if not df_processado.empty:
+        # --- BLOCO DE MÉTRICAS (Última Medição) ---
+        ultimo = df_processado.iloc[-1]
+        st.subheader(f"📅 Última Medição: {ultimo['Timestamp'].strftime('%d/%m/%Y %H:%M')}")
         
-        # Mapeamento para nomes amigáveis
-        column_mapping = {
-            'DT': 'Data', 'Ti': 'Hora', 'AG': 'Idade', 'Wk': 'Peso_kg',
-            'MI': 'IMC', 'FW': 'Gordura_Total_pct', 'mW': 'Massa_Muscular_kg',
-            'bW': 'Massa_Ossea_kg', 'IF': 'Gordura_Visceral', 'rD': 'TMB_kcal',
-            'rA': 'Idade_Metabolica', 'ww': 'Agua_Corporal_pct'
-        }
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Peso", f"{ultimo['Peso_kg']} kg")
+        m2.metric("Gordura", f"{ultimo['Gordura_Total_pct']}%")
+        m3.metric("Massa Muscular", f"{ultimo['Massa_Muscular_kg']} kg")
+        m4.metric("Idade Metabólica", f"{int(ultimo['Idade_Metabolica'])} anos")
+
+        st.markdown("---")
+
+        # --- BLOCO DE GRÁFICOS ---
+        tab1, tab2 = st.tabs(["📉 Evolução de Peso e Gordura", "💪 Massa Muscular e Água"])
         
-        existing_cols = [c for c in column_mapping.keys() if c in df.columns]
-        df = df[existing_cols].rename(columns=column_mapping)
-        
-        # 2. CONVERSÃO ROBUSTA DE DATA:
-        # errors='coerce' transforma lixo em NaT (Not a Time), que limpamos depois
-        if 'Data' in df.columns and 'Hora' in df.columns:
-            df['Data_Completa'] = pd.to_datetime(
-                df['Data'] + ' ' + df['Hora'], 
-                dayfirst=True, 
-                errors='coerce'
-            )
-            # Remove linhas onde a data falhou na conversão
-            df = df.dropna(subset=['Data_Completa'])
-        
-        # Conversão de números (também com coerce para evitar quebras)
-        numeric_cols = ['Peso_kg', 'IMC', 'Gordura_Total_pct', 'Massa_Muscular_kg', 
-                        'Massa_Ossea_kg', 'Gordura_Visceral', 'TMB_kcal', 
-                        'Idade_Metabolica', 'Agua_Corporal_pct']
-        
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-        return df.sort_values('Data_Completa')
+        with tab1:
+            fig_peso = px.line(df_processado, x='Timestamp', y=['Peso_kg', 'Gordura_Total_pct'], 
+                              title="Tendência de Peso e % de Gordura",
+                              markers=True, labels={"value": "Valor", "Timestamp": "Data"})
+            st.plotly_chart(fig_peso, use_container_width=True)
+
+        with tab2:
+            fig_musculo = px.area(df_processado, x='Timestamp', y='Massa_Muscular_kg', 
+                                title="Evolução da Massa Muscular",
+                                color_discrete_sequence=['#2ca02c'])
+            st.plotly_chart(fig_musculo, use_container_width=True)
+
+        # --- TABELA DE DADOS ---
+        with st.expander("Visualizar Histórico Completo"):
+            st.dataframe(df_processado.drop(columns=['Timestamp']).style.highlight_max(axis=0))
+    else:
+        st.error("O arquivo carregado não contém dados compatíveis com o BC-601.")
+else:
+    st.info("Por favor, carregue o arquivo DATA1.CSV para visualizar sua análise.")
